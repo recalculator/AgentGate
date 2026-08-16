@@ -147,8 +147,15 @@ runs:
 
         # One scan, both outputs — the behavioural checks are far too expensive
         # to run twice just to change the rendering.
-        agent-gate "${ARGS[@]}" --format markdown --output "$REPORT" --json-output "$JSON"
-        CODE=$?
+        #
+        # `|| CODE=$?` is load-bearing. GitHub runs composite `shell: bash` as
+        # `bash -e -o pipefail`, and a bare `set -uo pipefail` above does not
+        # clear that -e. agent-gate exits 1 on BLOCKED *by design*, so calling
+        # it directly kills this step before a single line reaches
+        # $GITHUB_OUTPUT — leaving `verdict` empty and the gate silently
+        # unable to report the one result it exists to report.
+        CODE=0
+        agent-gate "${ARGS[@]}" --format markdown --output "$REPORT" --json-output "$JSON" || CODE=$?
 
         if [ $CODE -eq 2 ]; then
           echo "::error::Agent Gate could not run. See the log above." >&2
