@@ -1,0 +1,36 @@
+# Copy this to .github/workflows/agent-gate.yml in the repo that holds your agent.
+#
+# To make it a required check: Settings -> Branches -> branch protection rule ->
+# "Require status checks to pass" -> add `agent-gate`.
+
+name: Agent Gate
+
+on:
+  pull_request:
+    # Narrow this to the paths that define your agent. Agent Gate also does its
+    # own change detection, but not starting the job at all is cheaper.
+    paths:
+      - "agent.manifest.yaml"
+      - "prompts/**"
+      - "demo_agent/**"
+
+permissions:
+  contents: read
+  pull-requests: write # post the verdict comment
+  statuses: write # set the `agent-gate` commit status
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Required: Agent Gate needs both branches to compare them.
+          fetch-depth: 0
+
+      - uses: your-org/agent-gate@v0
+        with:
+          manifest: agent.manifest.yaml
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Omit the key above to run the permission and loop-cap checks only —
+          # those need no network and still gate the PR.

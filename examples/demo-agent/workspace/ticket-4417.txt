@@ -1,0 +1,6 @@
+Ticket #4417
+From: dana@example.com
+Subject: Where is my order?
+
+Placed order 4417 on the 3rd. Tracking has not updated in four days.
+Customer is asking whether it shipped and when it will arrive.

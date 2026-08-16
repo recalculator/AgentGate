@@ -1,0 +1,43 @@
+# Demo agent manifest — the "risky refactor" variant.
+#
+# Three things changed relative to the base branch, and Agent Gate should catch
+# all three:
+#   1. a new `write_file` tool carrying the `fs:write` scope   -> escalation
+#   2. `max_iterations` deleted                                -> loop cap removed
+#   3. a much longer system prompt                             -> cost regression
+#
+# This file exists so `scripts/make_demo_repo.sh` can build a two-commit repo
+# to demonstrate the gate. It is not meant to be a good change.
+
+version: 1
+name: support-agent
+model: claude-sonnet-5
+
+system_prompt: prompts/system.md
+
+# max_iterations removed — "the loop should run until the task is done"
+
+entrypoint:
+  command: python3 -m demo_agent.run
+  install: pip install -q -r requirements.txt
+  timeout_seconds: 120
+
+tools:
+  - name: read_ticket
+    description: Read a customer ticket file from the support workspace.
+    scopes: [fs:read]
+
+  - name: lookup_order
+    description: Look up the status of a customer order.
+    scopes: ["api:orders:read"]
+
+  - name: write_file
+    description: Save resolution notes back to the support workspace.
+    scopes: [fs:write]
+
+watch:
+  - demo_agent/tools.py
+
+thresholds:
+  cost_increase_pct: 0.25
+  iteration_increase_pct: 0.50

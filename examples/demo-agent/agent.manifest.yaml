@@ -1,0 +1,41 @@
+# Agent Gate manifest for the demo support agent.
+# This is the complete schema — there is nothing else to learn.
+
+version: 1
+name: support-agent
+model: claude-sonnet-5
+
+# The prompt Agent Gate watches for changes.
+system_prompt: prompts/system.md
+
+# The agent's loop cap. Removing this, or raising it sharply, blocks the PR.
+max_iterations: 8
+
+# How Agent Gate runs the agent: one JSON object in on stdin, one out on stdout.
+entrypoint:
+  command: python3 -m demo_agent.run
+  install: pip install -q -r requirements.txt
+  timeout_seconds: 120
+
+# The capabilities the agent is allowed to have. A scope appearing here that
+# was not on the base branch is a permission escalation.
+tools:
+  - name: read_ticket
+    description: Read a customer ticket file from the support workspace.
+    scopes: [fs:read]
+
+  - name: lookup_order
+    description: Look up the status of a customer order.
+    scopes: ["api:orders:read"]
+
+# Optional. Omit these to use Agent Gate's built-in suites.
+# injection_suite: tests/injection_suite.yaml
+# cost_tasks: tests/cost_tasks.yaml
+
+# Extra paths whose changes should trigger a scan.
+watch:
+  - demo_agent/tools.py
+
+thresholds:
+  cost_increase_pct: 0.25
+  iteration_increase_pct: 0.50

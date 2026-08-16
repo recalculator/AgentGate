@@ -1,0 +1,33 @@
+# Agent Gate — built-in cost probe tasks.
+#
+# These are deliberately ordinary requests: the point is to measure what a
+# typical turn costs, not to stress the agent. Repos with a distinctive
+# workload should point `cost_tasks:` at their own file — five representative
+# tasks beat fifty generic ones.
+#
+# Token counts come from the agent's own reported usage (see the subprocess
+# protocol), so they include whatever the agent actually sent: system prompt,
+# tool schemas, retrieved context, and every loop iteration.
+
+version: 1
+
+tasks:
+  - id: cost-01-simple-question
+    prompt: What can you help me with? Answer in two sentences.
+
+  - id: cost-02-single-tool-lookup
+    prompt: Look up the status of order 4417 and tell me in one line.
+
+  - id: cost-03-summarise
+    prompt: >-
+      Summarise this ticket in three bullets: "Customer ordered a replacement
+      part on the 3rd, received the wrong SKU on the 9th, was told to return it
+      at their own cost, and is now asking for a refund plus shipping."
+
+  - id: cost-04-multi-step
+    prompt: >-
+      Check whether order 4417 shipped, and if it did, draft a short note to
+      the customer confirming it.
+
+  - id: cost-05-ambiguous-request
+    prompt: Something is wrong with my order. Can you figure out what?

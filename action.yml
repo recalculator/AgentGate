@@ -1,0 +1,215 @@
+name: "Agent Gate"
+description: "Block PRs that escalate an LLM agent's permissions, regress its injection resistance, or spike its cost."
+author: "Agent Gate"
+
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  manifest:
+    description: "Repo-relative path to the agent manifest."
+    required: false
+    default: "agent.manifest.yaml"
+  repo-path:
+    description: "Path to the git repository to scan. Defaults to the checked-out workspace."
+    required: false
+    default: "."
+  base-ref:
+    description: "Base ref to compare against. Defaults to the PR's base branch."
+    required: false
+    default: ""
+  head-ref:
+    description: "Head ref to scan. Defaults to the PR head SHA."
+    required: false
+    default: ""
+  anthropic-api-key:
+    description: "API key for the injection and cost checks. Omit to run static checks only."
+    required: false
+    default: ""
+  judge-model:
+    description: "Model used for LLM-as-judge. Defaults to the manifest's model."
+    required: false
+    default: ""
+  static-only:
+    description: "Run only the permission and loop-cap checks. No API calls."
+    required: false
+    default: "false"
+  repeats:
+    description: "Runs per cost probe task, averaged."
+    required: false
+    default: "1"
+  concurrency:
+    description: "Parallel agent invocations."
+    required: false
+    default: "4"
+  comment:
+    description: "Post (and update) a single PR comment with the verdict."
+    required: false
+    default: "true"
+  commit-status:
+    description: "Set a commit status named `agent-gate`, so it can be a required check."
+    required: false
+    default: "true"
+  fail-on-block:
+    description: "Fail the job when the verdict is BLOCKED. Set false to report without gating."
+    required: false
+    default: "true"
+  python-version:
+    description: "Python version used to run the CLI."
+    required: false
+    default: "3.11"
+  github-token:
+    description: "Token used to post the comment and set the status."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: "PASS or BLOCKED."
+    value: ${{ steps.scan.outputs.verdict }}
+  report-path:
+    description: "Path to the rendered markdown report."
+    value: ${{ steps.scan.outputs.report-path }}
+  json-path:
+    description: "Path to the machine-readable JSON result."
+    value: ${{ steps.scan.outputs.json-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Agent Gate
+      shell: bash
+      run: pip install --quiet "${{ github.action_path }}"
+
+    - name: Resolve refs
+      id: refs
+      shell: bash
+      working-directory: ${{ inputs.repo-path }}
+      env:
+        INPUT_BASE_REF: ${{ inputs.base-ref }}
+        INPUT_HEAD_REF: ${{ inputs.head-ref }}
+        PR_BASE: ${{ github.event.pull_request.base.ref }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        set -euo pipefail
+        BASE="${INPUT_BASE_REF:-}"
+        if [ -z "$BASE" ]; then
+          if [ -z "${PR_BASE:-}" ]; then
+            echo "::error::Not a pull_request event and no base-ref given. Set the base-ref input." >&2
+            exit 1
+          fi
+          # Make sure the base branch exists locally even on a shallow clone.
+          if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+            git fetch --no-tags --unshallow origin "${PR_BASE}" 2>/dev/null || true
+          fi
+          git fetch --no-tags origin \
+            "+refs/heads/${PR_BASE}:refs/remotes/origin/${PR_BASE}" 2>/dev/null || true
+          BASE="origin/${PR_BASE}"
+        fi
+        HEAD="${INPUT_HEAD_REF:-${PR_HEAD_SHA:-HEAD}}"
+        git rev-parse --verify "$BASE" >/dev/null 2>&1 || {
+          echo "::error::Cannot resolve base ref '$BASE'. Check out with fetch-depth: 0." >&2
+          exit 1
+        }
+        echo "base=$BASE" >> "$GITHUB_OUTPUT"
+        echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+        echo "Comparing $BASE -> $HEAD"
+
+    - name: Run Agent Gate
+      id: scan
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        AG_REPO: ${{ inputs.repo-path }}
+        AG_MANIFEST: ${{ inputs.manifest }}
+        AG_BASE: ${{ steps.refs.outputs.base }}
+        AG_HEAD: ${{ steps.refs.outputs.head }}
+        AG_STATIC_ONLY: ${{ inputs.static-only }}
+        AG_JUDGE_MODEL: ${{ inputs.judge-model }}
+        AG_REPEATS: ${{ inputs.repeats }}
+        AG_CONCURRENCY: ${{ inputs.concurrency }}
+      run: |
+        set -uo pipefail
+        REPORT="${RUNNER_TEMP}/agent-gate-report.md"
+        JSON="${RUNNER_TEMP}/agent-gate-result.json"
+
+        ARGS=(scan --repo "$AG_REPO" --base "$AG_BASE" --head "$AG_HEAD"
+              --manifest "$AG_MANIFEST"
+              --repeats "$AG_REPEATS" --concurrency "$AG_CONCURRENCY")
+        [ "$AG_STATIC_ONLY" = "true" ] && ARGS+=(--static-only)
+        [ -n "$AG_JUDGE_MODEL" ] && ARGS+=(--judge-model "$AG_JUDGE_MODEL")
+
+        # One scan, both outputs — the behavioural checks are far too expensive
+        # to run twice just to change the rendering.
+        agent-gate "${ARGS[@]}" --format markdown --output "$REPORT" --json-output "$JSON"
+        CODE=$?
+
+        if [ $CODE -eq 2 ]; then
+          echo "::error::Agent Gate could not run. See the log above." >&2
+          echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
+          echo "exit-code=2" >> "$GITHUB_OUTPUT"
+          exit 2
+        fi
+
+        VERDICT=PASS
+        [ $CODE -eq 1 ] && VERDICT=BLOCKED
+
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$CODE" >> "$GITHUB_OUTPUT"
+        echo "report-path=$REPORT" >> "$GITHUB_OUTPUT"
+        echo "json-path=$JSON" >> "$GITHUB_OUTPUT"
+
+        cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+        echo "Verdict: $VERDICT"
+
+    - name: Post PR comment
+      if: ${{ inputs.comment == 'true' && github.event.pull_request.number }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPORT: ${{ steps.scan.outputs.report-path }}
+      run: bash "${{ github.action_path }}/scripts/post_comment.sh"
+
+    - name: Set commit status
+      if: ${{ inputs.commit-status == 'true' && always() }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        VERDICT: ${{ steps.scan.outputs.verdict }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -uo pipefail
+        case "${VERDICT:-ERROR}" in
+          PASS)    STATE=success; DESC="No blocking changes" ;;
+          BLOCKED) STATE=failure; DESC="Needs human sign-off" ;;
+          *)       STATE=error;   DESC="Agent Gate could not run" ;;
+        esac
+        gh api -X POST "repos/${REPO}/statuses/${SHA}" \
+          -f state="$STATE" \
+          -f context="agent-gate" \
+          -f description="$DESC" \
+          -f target_url="$RUN_URL" >/dev/null \
+          && echo "commit status: $STATE" \
+          || echo "::warning::Could not set commit status (token may lack statuses: write)."
+
+    - name: Enforce verdict
+      if: ${{ inputs.fail-on-block == 'true' }}
+      shell: bash
+      env:
+        VERDICT: ${{ steps.scan.outputs.verdict }}
+      run: |
+        if [ "$VERDICT" = "BLOCKED" ]; then
+          echo "::error::Agent Gate: BLOCKED — this PR needs explicit sign-off." >&2
+          exit 1
+        fi
+        echo "Agent Gate: PASS"
