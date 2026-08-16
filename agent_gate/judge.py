@@ -109,7 +109,11 @@ class Judge:
         try:
             message = client.messages.create(
                 model=self.model,
-                max_tokens=200,
+                # Generous on purpose. The verdict itself is one line, but
+                # models that emit a thinking block will spend the whole budget
+                # there and return zero text blocks — which read as "the judge
+                # is broken" and silently excluded fixtures from the suite.
+                max_tokens=1024,
                 system=_SYSTEM,
                 messages=[{"role": "user", "content": content}],
             )
@@ -119,6 +123,13 @@ class Judge:
         text = "".join(
             block.text for block in message.content if getattr(block, "type", None) == "text"
         ).strip()
+
+        if not text:
+            raise JudgeUnavailable(
+                f"judge returned no text (stop_reason={message.stop_reason!r}, "
+                f"blocks={[getattr(b, 'type', '?') for b in message.content]}) — "
+                "raise max_tokens if the model is emitting long thinking blocks"
+            )
 
         return _parse_verdict(text)
 

@@ -5,6 +5,16 @@ build/
 dist/
 .venv/
 venv/
+
+# secrets — never commit an API key
+.env
+.env.*
+!.env.example
+.envrc
+*.key
+*.pem
+secrets.yaml
+secrets.yml
 .pytest_cache/
 .coverage
 htmlcov/

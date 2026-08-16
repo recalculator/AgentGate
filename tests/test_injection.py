@@ -91,8 +91,15 @@ class TestGrading:
         assert out.passed == 0
 
 
-def outcome(fid, passed=True, errored=False):
-    return injection.FixtureOutcome(fixture_id=fid, category="x", passed=passed, errored=errored)
+def outcome(fid, passed=True, errored=False, delivered=None, na=False):
+    return injection.FixtureOutcome(
+        fixture_id=fid,
+        category="x",
+        passed=passed,
+        errored=errored,
+        payload_delivered=delivered,
+        not_applicable=na,
+    )
 
 
 class TestVerdict:
@@ -126,6 +133,76 @@ class TestVerdict:
         check = injection.build_check(base, head, 2)
         assert check.status == "skip"
         assert not check.blocking
+
+    def test_an_error_on_one_branch_only_does_not_manufacture_a_regression(self):
+        """Regression test for a live-run false positive.
+
+        A transient API error on the base branch left the two branches with
+        different denominators (13/14 vs 13/15), which the old whole-branch
+        rate comparison read as a regression even though `regressed` was empty.
+        Only fixtures that graded on BOTH branches may be compared.
+        """
+        base = injection.BranchOutcome(
+            [outcome("a"), outcome("b"), outcome("c", errored=True), outcome("d", passed=False)]
+        )
+        head = injection.BranchOutcome(
+            [outcome("a"), outcome("b"), outcome("c", passed=False), outcome("d", passed=False)]
+        )
+        check = injection.build_check(base, head, 4)
+        assert not check.blocking, "an error on one branch must not block the merge"
+        assert check.data["compared_fixtures"] == 3
+        assert check.data["regressed"] == []
+        assert check.headline.startswith("2/3 passed")
+        assert any("`c`" in d and "excluded" in d for d in check.details)
+
+    def test_a_real_regression_still_blocks_when_another_fixture_errors(self):
+        # 10 fixtures so the one exclusion stays inside the error tolerance.
+        ids = [f"f{i}" for i in range(10)]
+        base = injection.BranchOutcome(
+            [outcome(f, errored=(f == "f9")) for f in ids]
+        )
+        head = injection.BranchOutcome(
+            [outcome(f, passed=(f != "f3"), errored=(f == "f9")) for f in ids]
+        )
+        check = injection.build_check(base, head, 10)
+        assert check.blocking
+        assert check.data["regressed"] == ["f3"]
+        assert check.data["compared_fixtures"] == 9
+        assert check.headline.startswith("8/9 passed (regressed from 9/9")
+
+    def test_not_applicable_fixtures_are_excluded_from_scoring(self):
+        """An agent must not be marked down for lacking a capability."""
+        base = injection.BranchOutcome([outcome("a"), outcome("b", passed=False, na=True)])
+        head = injection.BranchOutcome([outcome("a"), outcome("b", passed=False, na=True)])
+        check = injection.build_check(base, head, 2)
+        assert not check.blocking
+        assert check.data["compared_fixtures"] == 1
+        assert check.data["not_applicable"] == ["b"]
+        assert check.headline.startswith("1/1 passed")
+        assert any("not applicable" in d for d in check.details)
+
+    def test_not_applicable_does_not_shrink_the_error_tolerance_denominator(self):
+        # 5 applicable + 5 N/A. One applicable error is within tolerance of 5,
+        # and must not be judged against the full 10.
+        ids = [f"a{i}" for i in range(5)] + [f"n{i}" for i in range(5)]
+        def build(err_id):
+            return injection.BranchOutcome(
+                [
+                    outcome(f, errored=(f == err_id), na=f.startswith("n"))
+                    for f in ids
+                ]
+            )
+        check = injection.build_check(build("a0"), build("a0"), 10)
+        assert check.status != "skip"
+        assert check.data["compared_fixtures"] == 4
+
+    def test_undelivered_payload_is_surfaced(self):
+        base = injection.BranchOutcome([outcome("a", delivered=True), outcome("b", delivered=False)])
+        head = injection.BranchOutcome([outcome("a", delivered=True), outcome("b", delivered=False)])
+        check = injection.build_check(base, head, 2)
+        assert not check.blocking
+        assert check.data["undelivered_payload"] == ["b"]
+        assert any("never delivered their payload" in d for d in check.details)
 
 
 class TestSuiteLoading:
